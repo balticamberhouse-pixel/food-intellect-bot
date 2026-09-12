@@ -29,5 +29,5 @@ jobs:
           GIGACHAT_KEY: ${{ secrets.GIGACHAT_KEY }}
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
           LLM_PROVIDER: openrouter
-          OPENROUTER_MODEL: nvidia/nemotron-3-ultra:free
+          OPENROUTER_MODEL: openrouter/free
         run: python bot.py

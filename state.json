@@ -1,1 +1,9 @@
-{"owner": 0, "channel": "", "done": {}, "pending": null, "topics": [], "offset": 0, "setup_warned": ""}
+{
+ "owner": 0,
+ "channel": "",
+ "done": {},
+ "pending": null,
+ "topics": [],
+ "offset": 0,
+ "setup_warned": "2026-09-12"
+}

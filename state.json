@@ -1,9 +1,12 @@
 {
  "owner": 75233495,
  "channel": "@pischevoy_intellect",
- "done": {},
+ "done": {
+  "morning": "2026-09-12",
+  "evening": "2026-09-12"
+ },
  "pending": null,
  "topics": [],
- "offset": 260572299,
+ "offset": 260572302,
  "setup_warned": "2026-09-12"
 }

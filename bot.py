@@ -315,4 +315,4 @@ def handle(msg):
         parts = text.split(None, 1)
         comment = parts[1] if len(parts) > 1 else ""
         slot = STATE["pending"]["slot"] if STATE["pending"] else "test"
-        notify_owner("🔄 Переписываю…"); generate(slot
+              notify_owner("🔄 Переписываю…"); generate(slot, comment)

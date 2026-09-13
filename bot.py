@@ -319,7 +319,7 @@ def main():
     log.info("run started")
     end = time.time() + RUN_SECONDS
     while time.time() < end:
-        ups = tg("getUpdates", offset=STATE["offset"], timeout=50, allowed_updates=["message"]) or []
+        ups = tg("getUpdates", _http_timeout=55, offset=STATE["offset"], timeout=50, allowed_updates=["message"]) or []
         if isinstance(ups, dict):
             ups = []; time.sleep(3)
         for u in ups:

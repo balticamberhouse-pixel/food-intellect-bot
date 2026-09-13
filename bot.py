@@ -1,4 +1,4 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» v3: цепляющий стиль + автокартинки + /pub
+# bot.py — AI-редактор канала «Пищевой интеллект» v4: русский язык + качественные картинки
 import os, json, time, uuid, datetime, subprocess, logging
 from urllib.parse import quote
 import requests, urllib3
@@ -39,6 +39,7 @@ def save_state():
 
 def cur_provider(): return STATE.get("provider") or PROVIDER
 def cur_model(): return STATE.get("giga_model") or GIGA_MODEL
+def cur_ormodel(): return STATE.get("or_model") or OR_MODEL
 
 SLOTS = {"morning": (9, 0), "evening": (16, 0)}
 LABEL = {"morning": "09:00", "evening": "16:00", "test": "тест"}
@@ -70,6 +71,13 @@ def notify_owner(text):
         res = tg("sendMessage", chat_id=STATE["owner"], text=text)
         log.info("notify_owner -> %s", "ok" if ok_res(res) else res)
 
+def cyr_ratio(s):
+    letters = [c for c in s if c.isalpha()]
+    if not letters:
+        return 0.0
+    ru = sum(1 for c in letters if ("а" <= c.lower() <= "я") or c.lower() == "ё")
+    return ru / len(letters)
+
 # ---------- нейросеть ----------
 _g = {"tok": None, "exp": 0.0}
 def giga_token():
@@ -86,16 +94,17 @@ def giga_token():
     return _g["tok"]
 
 SYSTEM = ("Ты — автор телеграм-канала «Пищевой интеллект» (питание и еда: выбор продуктов, этикетки, "
-          "хранение, готовка, мифы, планирование рациона, сезонность). Пиши по-русски в живом цепляющем стиле: "
-          "хук в первой строке, короткие предложения, обращение на «ты», конкретные цифры и примеры, разоблачение мифов. "
-          "Без воды, штампов и выдуманных исследований; без медицинских назначений — где нужно, «проконсультируйтесь с врачом».")
+          "хранение, готовка, мифы, планирование рациона, сезонность). Пиши СТРОГО НА РУССКОМ ЯЗЫКЕ, "
+          "в живом цепляющем стиле: хук в первой строке, короткие предложения, обращение на «ты», "
+          "конкретные цифры и примеры, разоблачение мифов. Без воды, штампов и выдуманных исследований; "
+          "без медицинских назначений — где нужно, «проконсультируйтесь с врачом».")
 
 def llm_text(user_prompt):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_prompt}]
     if cur_provider() == "openrouter":
         r = requests.post("https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": "Bearer " + OR_KEY},
-            json={"model": OR_MODEL, "messages": msgs}, timeout=90)
+            json={"model": cur_ormodel(), "messages": msgs}, timeout=90)
     else:
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization": "Bearer " + giga_token()},
@@ -107,30 +116,38 @@ def llm_text(user_prompt):
 def build_prompt(comment):
     recent = "\n".join("- " + t for t in STATE["topics"][-20:]) or "- (пока пусто)"
     p = ("Придумай НОВУЮ тему поста, которой ещё не было (недавние темы — не повторяй):\n" + recent +
-         "\n\nНапиши пост, который цепляет внимание с первой строки.\n"
-         "Первая строка ответа: «ТЕМА: <тема в 3-6 словах>», затем пост с новой строки.\n"
-         "Стиль: первая строка поста — хук (неожиданный факт, разоблачение мифа или провокационный вопрос). "
-         "Дальше 2-3 абзаца сути с практической пользой, короткие предложения, конкретика и цифры. "
-         "Финал — резкий вывод и вопрос читателям. В конце 3-4 хэштега с новой строки.\n"
-         "Всего НЕ БОЛЕЕ 950 символов. Пиши только текст, без пояснений.")
+         "\n\nНапиши пост, который цепляет внимание с первой строки. Весь ответ — ТОЛЬКО на русском языке.\n"
+         "Формат ответа строго такой:\n"
+         "1-я строка: ТЕМА: <тема в 3-6 словах по-русски>\n"
+         "2-я строка: КАРТИНКА: <3-7 слов НА АНГЛИЙСКОМ: что изображено на фото к посту>\n"
+         "Затем пост: первая строка — хук (неожиданный факт, разоблачение мифа или провокационный вопрос); "
+         "далее 2-3 абзаца сути с практической пользой, короткие предложения, конкретика и цифры; "
+         "финал — резкий вывод и вопрос читателям; в конце 3-4 хэштега по-русски с новой строки.\n"
+         "Пост НЕ БОЛЕЕ 950 символов. Никаких пояснений вне формата.")
     if comment:
         p += "\n\nКомментарий редактора (владельца канала), который надо учесть: " + comment
     return p
 
-def make_image_url(topic):
-    q = quote("appetizing editorial food photography: " + topic +
-              ", bright natural light, close-up, vibrant colors, no text, no watermark")
-    return "https://image.pollinations.ai/prompt/" + q + "?width=1024&height=768&nologo=true"
+TRANSLATE_PROMPT = ("Переведи на русский язык пост для телеграм-канала, сохранив структуру, хук, цифры и смысл. "
+                    "Хэштеги тоже по-русски. Первая строка ответа: «ТЕМА: <тема по-русски в 3-6 словах>», "
+                    "затем пост. Верни только текст без пояснений:\n\n")
 
 def split_topic(raw):
     lines = raw.strip().splitlines()
-    topic, rest = "", raw.strip()
+    topic, img_desc, start = "", "", 0
     if lines and lines[0].upper().startswith("ТЕМА:"):
-        topic = lines[0].split(":", 1)[1].strip()
-        rest = "\n".join(lines[1:]).strip()
+        topic = lines[0].split(":", 1)[1].strip(); start = 1
+    if len(lines) > start and lines[start].upper().startswith(("КАРТИНКА:", "IMAGE:", "PICTURE:")):
+        img_desc = lines[start].split(":", 1)[1].strip(); start += 1
+    rest = "\n".join(lines[start:]).strip()
     if len(rest) > 990:
         rest = rest[:990].rsplit("\n", 1)[0] + "\n…"
-    return topic or "(тема)", rest
+    return topic or "(тема)", img_desc, rest
+
+def make_image_url(desc):
+    q = quote(desc + ", appetizing editorial food photography, bright natural light, "
+                     "close-up, vibrant colors, no text, no watermark")
+    return "https://image.pollinations.ai/prompt/" + q + "?width=1024&height=768&model=flux&nologo=true"
 
 def generate(slot, comment=""):
     try:
@@ -140,8 +157,19 @@ def generate(slot, comment=""):
         log.error("LLM error: %s | body: %s", e, body)
         notify_owner("⚠️ Не удалось сгенерировать пост (" + str(e)[:150] + "). Попробую в следующий запуск.")
         return
-    topic, text = split_topic(raw)
-    img = make_image_url(topic)
+    topic, img_desc, text = split_topic(raw)
+    if cyr_ratio(text) < 0.5:
+        log.warning("non-russian draft, translating")
+        try:
+            fixed = llm_text(TRANSLATE_PROMPT + text)
+            t2, d2, x2 = split_topic(fixed)
+            if cyr_ratio(x2) >= 0.5:
+                topic, text = t2 or topic, x2
+        except Exception:
+            log.exception("translate failed")
+    if not img_desc:
+        img_desc = topic
+    img = make_image_url(img_desc)
     STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": img,
                         "created": int(time.time()), "reminded": int(time.time())}
     save_state()
@@ -189,16 +217,17 @@ def publish():
 # ---------- команды владельца ----------
 def menu():
     return ("Мои команды:\n/publish — опубликовать черновик\n"
-            "/pub + фото с подписью-текстом — опубликовать ВАШ пост сразу (например, от шефа-редактора)\n"
+            "/pub + фото с подписью-текстом — опубликовать ВАШ пост сразу\n"
             "/redo комментарий — переписать черновик\n/skip — пропустить публикацию\n"
             "/test — тестовый черновик прямо сейчас\n/channel @имя — задать канал\n"
+            "/ormodel имя — закрепить модель OpenRouter (например nvidia/nemotron-3-ultra:free)\n"
             "/status — состояние\n/done morning|evening — пометить слот сделанным")
 
 def status_text():
     today = msk().date().isoformat()
     d = STATE["done"]
     return ("Статус:\nКанал: " + (STATE["channel"] or "не настроен") +
-            "\nНейросеть: " + cur_provider() + " / " + cur_model() +
+            "\nНейросеть: " + cur_provider() + " / " + (cur_model() if cur_provider() == "gigachat" else cur_ormodel()) +
             "\nУтро (09:00): " + ("готово" if d.get("morning") == today else "ожидает") +
             "\nВечер (16:00): " + ("готово" if d.get("evening") == today else "ожидает") +
             "\nЧерновик на проверке: " + ("да («" + STATE["pending"]["topic"] + "»)" if STATE["pending"] else "нет"))
@@ -270,6 +299,10 @@ def handle(msg):
         parts = text.split(None, 1)
         if len(parts) > 1:
             STATE["giga_model"] = parts[1].strip(); save_state(); notify_owner("Модель: " + STATE["giga_model"])
+    elif low.startswith("/ormodel"):
+        parts = text.split(None, 1)
+        if len(parts) > 1:
+            STATE["or_model"] = parts[1].strip(); save_state(); notify_owner("Модель OpenRouter: " + STATE["or_model"])
     elif low.startswith("/provider"):
         parts = text.split(None, 1)
         if len(parts) > 1 and parts[1] in ("gigachat", "openrouter"):

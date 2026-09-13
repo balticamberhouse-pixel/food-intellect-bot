@@ -1,5 +1,6 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» (версия для GitHub Actions, с самодиагностикой)
+# bot.py — AI-редактор канала «Пищевой интеллект» v3: цепляющий стиль + автокартинки + /pub
 import os, json, time, uuid, datetime, subprocess, logging
+from urllib.parse import quote
 import requests, urllib3
 urllib3.disable_warnings()
 
@@ -84,11 +85,10 @@ def giga_token():
     _g["tok"] = d["access_token"]; _g["exp"] = d["expires_at"] / 1000.0
     return _g["tok"]
 
-SYSTEM = ("Ты — главный редактор телеграм-канала «Пищевой интеллект». Канал о питании и еде: "
-          "как выбирать продукты, читать составы, хранить и готовить, мифы и факты о питании, "
-          "планирование рациона, сезонные продукты, разумная экономия без вреда для здоровья. "
-          "Пиши по-русски, экспертно, но простым языком, без выдуманных исследований и точных цифр, "
-          "без медицинских назначений (где уместно — добавляй «проконсультируйтесь с врачом»). Без воды и штампов.")
+SYSTEM = ("Ты — автор телеграм-канала «Пищевой интеллект» (питание и еда: выбор продуктов, этикетки, "
+          "хранение, готовка, мифы, планирование рациона, сезонность). Пиши по-русски в живом цепляющем стиле: "
+          "хук в первой строке, короткие предложения, обращение на «ты», конкретные цифры и примеры, разоблачение мифов. "
+          "Без воды, штампов и выдуманных исследований; без медицинских назначений — где нужно, «проконсультируйтесь с врачом».")
 
 def llm_text(user_prompt):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_prompt}]
@@ -107,13 +107,20 @@ def llm_text(user_prompt):
 def build_prompt(comment):
     recent = "\n".join("- " + t for t in STATE["topics"][-20:]) or "- (пока пусто)"
     p = ("Придумай НОВУЮ тему поста, которой ещё не было (недавние темы — не повторяй):\n" + recent +
-         "\n\nНапиши готовый пост для канала.\nФормат:\nПервая строка: «ТЕМА: <тема в 3-6 словах>»\n"
-         "Затем сам пост: цепляющий заголовок с 1 эмодзи, 3-4 коротких абзаца с практической пользой, "
-         "строка «💡 Вывод: …», в конце 3-4 хэштега с новой строки.\n"
-         "Всего НЕ БОЛЕЕ 950 символов. Пиши только текст поста, без пояснений.")
+         "\n\nНапиши пост, который цепляет внимание с первой строки.\n"
+         "Первая строка ответа: «ТЕМА: <тема в 3-6 словах>», затем пост с новой строки.\n"
+         "Стиль: первая строка поста — хук (неожиданный факт, разоблачение мифа или провокационный вопрос). "
+         "Дальше 2-3 абзаца сути с практической пользой, короткие предложения, конкретика и цифры. "
+         "Финал — резкий вывод и вопрос читателям. В конце 3-4 хэштега с новой строки.\n"
+         "Всего НЕ БОЛЕЕ 950 символов. Пиши только текст, без пояснений.")
     if comment:
         p += "\n\nКомментарий редактора (владельца канала), который надо учесть: " + comment
     return p
+
+def make_image_url(topic):
+    q = quote("appetizing editorial food photography: " + topic +
+              ", bright natural light, close-up, vibrant colors, no text, no watermark")
+    return "https://image.pollinations.ai/prompt/" + q + "?width=1024&height=768&nologo=true"
 
 def split_topic(raw):
     lines = raw.strip().splitlines()
@@ -129,17 +136,20 @@ def generate(slot, comment=""):
     try:
         raw = llm_text(build_prompt(comment))
     except Exception as e:
-        log.exception("LLM error")
-        notify_owner("⚠️ Не удалось сгенерировать пост (" + str(e)[:200] + "). Попробую в следующий запуск.")
+        body = getattr(getattr(e, "response", None), "text", "")[:300]
+        log.error("LLM error: %s | body: %s", e, body)
+        notify_owner("⚠️ Не удалось сгенерировать пост (" + str(e)[:150] + "). Попробую в следующий запуск.")
         return
     topic, text = split_topic(raw)
-    STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": None,
+    img = make_image_url(topic)
+    STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": img,
                         "created": int(time.time()), "reminded": int(time.time())}
     save_state()
-    notify_owner("📝 Черновик к " + LABEL.get(slot, slot) + " готов.\n\n" + text +
-                 "\n\n──────────────\nЧто дальше (отвечаю в течение ~5 минут):\n"
-                 "🖼 Пришлите фото — прикреплю его к посту\n✅ /publish — опубликовать в канал\n"
-                 "🔄 /redo ваш комментарий — переписать\n⏭️ /skip — пропустить публикацию")
+    pic = tg("sendPhoto", chat_id=STATE["owner"], photo=img, caption=text)
+    if not ok_res(pic):
+        notify_owner("📝 Черновик к " + LABEL.get(slot, slot) + " (без картинки):\n\n" + text)
+    notify_owner("──────────────\nЧто дальше:\n🖼 Пришлите своё фото — заменю картинку\n"
+                 "✅ /publish — опубликовать\n🔄 /redo комментарий — переписать\n⏭️ /skip — пропустить")
 
 # ---------- публикация ----------
 def post_link(mid):
@@ -156,9 +166,12 @@ def publish():
         notify_owner("Сейчас нет черновика. /test — сделать тестовый."); return
     if not STATE["channel"]:
         notify_owner("Канал не настроен. Пришлите /channel @ваш_канал"); return
-    if p["image"]:
+    res = None
+    if p.get("image"):
         res = tg("sendPhoto", chat_id=STATE["channel"], photo=p["image"], caption=p["text"])
-    else:
+        if not ok_res(res):
+            log.warning("photo publish failed, fallback to text")
+    if not ok_res(res):
         res = tg("sendMessage", chat_id=STATE["channel"], text=p["text"])
     if not ok_res(res):
         err = res.get("error", "нет ответа") if isinstance(res, dict) else "нет ответа"
@@ -175,10 +188,10 @@ def publish():
 
 # ---------- команды владельца ----------
 def menu():
-    return ("Мои команды (отвечаю в течение ~5 минут):\n/publish — опубликовать черновик\n"
+    return ("Мои команды:\n/publish — опубликовать черновик\n"
+            "/pub + фото с подписью-текстом — опубликовать ВАШ пост сразу (например, от шефа-редактора)\n"
             "/redo комментарий — переписать черновик\n/skip — пропустить публикацию\n"
             "/test — тестовый черновик прямо сейчас\n/channel @имя — задать канал\n"
-            "/model имя — модель (GigaChat-Pro, GigaChat-Max, GigaChat-3-Ultra)\n"
             "/status — состояние\n/done morning|evening — пометить слот сделанным")
 
 def status_text():
@@ -199,7 +212,7 @@ def handle(msg):
         if text.startswith("/start"):
             STATE["owner"] = uid; save_state()
             notify_owner("👋 Привет! Я — AI-редактор «Пищевого интеллекта».\n"
-                         "Пришлите /channel @имя_канала, затем /test — сделаю пробный черновик.\n"
+                         "Пришлите /channel @имя_канала, затем /test — сделаю пробный черновик с картинкой.\n"
                          "Дальше буду работать сам: черновики в 09:00 и 16:00 МСК.")
         else:
             tg("sendMessage", chat_id=uid, text="Я жду владельца канала. Отправьте /start.")
@@ -208,11 +221,22 @@ def handle(msg):
         return
     low = text.lower()
     if msg.get("photo"):
+        if low.startswith("/pub"):
+            body = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
+            if not STATE["channel"]:
+                notify_owner("Канал не настроен: /channel @имя_канала"); return
+            res = tg("sendPhoto", chat_id=STATE["channel"], photo=msg["photo"][-1]["file_id"], caption=body)
+            if ok_res(res):
+                link = post_link(res.get("message_id"))
+                notify_owner("✅ Опубликовано!" + ("\n" + link if link else ""))
+            else:
+                notify_owner("⚠️ Не удалось опубликовать: " + (res.get("error") if isinstance(res, dict) else "нет ответа"))
+            return
         if STATE["pending"]:
             STATE["pending"]["image"] = msg["photo"][-1]["file_id"]; save_state()
-            notify_owner("🖼 Фото получил. /publish — опубликовать пост с ним.")
+            notify_owner("🖼 Фото получил — заменю картинку поста. /publish — опубликовать.")
         else:
-            notify_owner("Сейчас нет черновика в ожидании. /test — сделать черновик.")
+            notify_owner("Черновика нет. Можно опубликовать напрямую: пришлите фото с подписью, где первая строка /pub, а дальше текст поста.")
         return
     if low.startswith("/publish") or low in ("опубликуй", "опубликовать"):
         publish()
@@ -220,7 +244,7 @@ def handle(msg):
         parts = text.split(None, 1)
         comment = parts[1] if len(parts) > 1 else ""
         slot = STATE["pending"]["slot"] if STATE["pending"] else "test"
-        notify_owner(" Переписываю…"); generate(slot, comment)
+        notify_owner("🔄 Переписываю…"); generate(slot, comment)
     elif low.startswith("/skip"):
         p = STATE["pending"]
         if p and p["slot"] in SLOTS:

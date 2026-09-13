@@ -1,4 +1,4 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» (версия для GitHub Actions)
+# bot.py — AI-редактор канала «Пищевой интеллект» (версия для GitHub Actions, с самодиагностикой)
 import os, json, time, uuid, datetime, subprocess, logging
 import requests, urllib3
 urllib3.disable_warnings()
@@ -61,9 +61,13 @@ def tg(method, _http_timeout=25, **kw):
         time.sleep(2)
     return None
 
+def ok_res(res):
+    return bool(res) and not (isinstance(res, dict) and "error" in res)
+
 def notify_owner(text):
     if STATE["owner"]:
-        tg("sendMessage", chat_id=STATE["owner"], text=text)
+        res = tg("sendMessage", chat_id=STATE["owner"], text=text)
+        log.info("notify_owner -> %s", "ok" if ok_res(res) else res)
 
 # ---------- нейросеть ----------
 _g = {"tok": None, "exp": 0.0}
@@ -156,8 +160,8 @@ def publish():
         res = tg("sendPhoto", chat_id=STATE["channel"], photo=p["image"], caption=p["text"])
     else:
         res = tg("sendMessage", chat_id=STATE["channel"], text=p["text"])
-    if not res or (isinstance(res, dict) and "error" in res):
-        err = res.get("error", "нет ответа Telegram") if isinstance(res, dict) else "нет ответа"
+    if not ok_res(res):
+        err = res.get("error", "нет ответа") if isinstance(res, dict) else "нет ответа"
         notify_owner("⚠️ Не удалось опубликовать: " + err +
                      "\nПроверьте, что бот — администратор канала с правом «Публиковать сообщения».")
         return
@@ -216,7 +220,7 @@ def handle(msg):
         parts = text.split(None, 1)
         comment = parts[1] if len(parts) > 1 else ""
         slot = STATE["pending"]["slot"] if STATE["pending"] else "test"
-        notify_owner("🔄 Переписываю…"); generate(slot, comment)
+        notify_owner(" Переписываю…"); generate(slot, comment)
     elif low.startswith("/skip"):
         p = STATE["pending"]
         if p and p["slot"] in SLOTS:
@@ -232,7 +236,7 @@ def handle(msg):
                 ch = "@" + ch
             STATE["channel"] = ch; save_state()
             info = tg("getChat", chat_id=ch)
-            if isinstance(info, dict) and "error" not in info:
+            if ok_res(info):
                 notify_owner("✅ Канал подключён: " + str(info.get("title", ch)))
             else:
                 notify_owner("Сохранил канал " + ch + ", но не смог открыть. Проверьте имя и что бот добавлен админом.")
@@ -316,6 +320,8 @@ def main():
         log.error("НЕТ BOT_TOKEN! Добавьте секрет BOT_TOKEN в настройках репозитория.")
         return
     tg("deleteWebhook")
+    me = tg("getMe")
+    log.info("I am: %s", me)
     log.info("run started")
     end = time.time() + RUN_SECONDS
     while time.time() < end:
@@ -324,9 +330,13 @@ def main():
             ups = []; time.sleep(3)
         for u in ups:
             STATE["offset"] = u["update_id"] + 1; save_state()
+            m = u.get("message") or {}
+            log.info("update %s | chat %s (%s) | %s", u["update_id"],
+                     m.get("chat", {}).get("id"), m.get("chat", {}).get("type"),
+                     (m.get("text") or m.get("caption") or "<фото>")[:80])
             try:
-                if "message" in u:
-                    handle(u["message"])
+                if m:
+                    handle(m)
             except Exception:
                 log.exception("handle")
         try:

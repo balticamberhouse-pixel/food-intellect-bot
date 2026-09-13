@@ -24,11 +24,11 @@ jobs:
           cache: "pip"
       - run: pip install -r requirements.txt
       - name: Run bot
-      env:
-        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        GIGACHAT_KEY: ${{ secrets.GIGACHAT_KEY }}
-        OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
-        PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
-        LLM_PROVIDER: openrouter
-        OPENROUTER_MODEL: openrouter/free
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GIGACHAT_KEY: ${{ secrets.GIGACHAT_KEY }}
+          OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
+          PEXELS_KEY: ${{ secrets.PEXELS_KEY }}
+          LLM_PROVIDER: openrouter
+          OPENROUTER_MODEL: openrouter/free
         run: python bot.py

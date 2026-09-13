@@ -1,5 +1,5 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» v4: русский язык + качественные картинки
-import os, json, time, uuid, datetime, subprocess, logging
+# bot.py — AI-редактор канала «Пищевой интеллект» v5: реальные фото Pexels + улучшенный AI-запас
+import os, json, time, uuid, datetime, subprocess, logging, random
 from urllib.parse import quote
 import requests, urllib3
 urllib3.disable_warnings()
@@ -27,6 +27,7 @@ GIGA_KEY = os.environ.get("GIGACHAT_KEY", "").strip()
 GIGA_MODEL = os.environ.get("GIGACHAT_MODEL", "GigaChat-Pro")
 OR_KEY = os.environ.get("OPENROUTER_KEY", "").strip()
 OR_MODEL = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+PEX_KEY = os.environ.get("PEXELS_KEY", "").strip()
 
 CHANGED = False
 def save_state():
@@ -40,6 +41,7 @@ def save_state():
 def cur_provider(): return STATE.get("provider") or PROVIDER
 def cur_model(): return STATE.get("giga_model") or GIGA_MODEL
 def cur_ormodel(): return STATE.get("or_model") or OR_MODEL
+def cur_imgsource(): return STATE.get("imgsource") or ("pexels" if PEX_KEY else "ai")
 
 SLOTS = {"morning": (9, 0), "evening": (16, 0)}
 LABEL = {"morning": "09:00", "evening": "16:00", "test": "тест"}
@@ -119,7 +121,7 @@ def build_prompt(comment):
          "\n\nНапиши пост, который цепляет внимание с первой строки. Весь ответ — ТОЛЬКО на русском языке.\n"
          "Формат ответа строго такой:\n"
          "1-я строка: ТЕМА: <тема в 3-6 словах по-русски>\n"
-         "2-я строка: КАРТИНКА: <3-7 слов НА АНГЛИЙСКОМ: что изображено на фото к посту>\n"
+         "2-я строка: КАРТИНКА: <2-5 слов НА АНГЛИЙСКОМ: какой продукт или блюдо показать на фото>\n"
          "Затем пост: первая строка — хук (неожиданный факт, разоблачение мифа или провокационный вопрос); "
          "далее 2-3 абзаца сути с практической пользой, короткие предложения, конкретика и цифры; "
          "финал — резкий вывод и вопрос читателям; в конце 3-4 хэштега по-русски с новой строки.\n"
@@ -144,10 +146,36 @@ def split_topic(raw):
         rest = rest[:990].rsplit("\n", 1)[0] + "\n…"
     return topic or "(тема)", img_desc, rest
 
+# ---------- картинки ----------
+def pexels_image_url(desc):
+    r = requests.get("https://api.pexels.com/v1/search",
+        headers={"Authorization": PEX_KEY},
+        params={"query": desc, "per_page": 5, "orientation": "landscape"}, timeout=30)
+    r.raise_for_status()
+    photos = r.json().get("photos") or []
+    if not photos:
+        return None
+    return random.choice(photos[:5])["src"]["large"]
+
 def make_image_url(desc):
-    q = quote(desc + ", appetizing editorial food photography, bright natural light, "
-                     "close-up, vibrant colors, no text, no watermark")
-    return "https://image.pollinations.ai/prompt/" + q + "?width=1024&height=768&model=flux&nologo=true"
+    q = quote(desc + ", professional magazine food photography, soft natural window light, "
+                     "shallow depth of field, rustic kitchen table, appetizing, ultra detailed, "
+                     "no text, no watermark")
+    return ("https://image.pollinations.ai/prompt/" + q +
+            "?width=1024&height=768&model=flux&nologo=true&enhance=true")
+
+def pick_image(desc):
+    src = cur_imgsource()
+    if src == "pexels" and PEX_KEY:
+        try:
+            url = pexels_image_url(desc)
+            if url:
+                log.info("image: pexels")
+                return url
+        except Exception as e:
+            log.warning("pexels failed: %s", e)
+    log.info("image: ai")
+    return make_image_url(desc)
 
 def generate(slot, comment=""):
     try:
@@ -165,11 +193,12 @@ def generate(slot, comment=""):
             t2, d2, x2 = split_topic(fixed)
             if cyr_ratio(x2) >= 0.5:
                 topic, text = t2 or topic, x2
+                img_desc = img_desc or d2
         except Exception:
             log.exception("translate failed")
     if not img_desc:
         img_desc = topic
-    img = make_image_url(img_desc)
+    img = pick_image(img_desc)
     STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": img,
                         "created": int(time.time()), "reminded": int(time.time())}
     save_state()
@@ -220,7 +249,8 @@ def menu():
             "/pub + фото с подписью-текстом — опубликовать ВАШ пост сразу\n"
             "/redo комментарий — переписать черновик\n/skip — пропустить публикацию\n"
             "/test — тестовый черновик прямо сейчас\n/channel @имя — задать канал\n"
-            "/ormodel имя — закрепить модель OpenRouter (например nvidia/nemotron-3-ultra:free)\n"
+            "/imgsource pexels|ai — источник картинок (фото или генерация)\n"
+            "/ormodel имя — закрепить модель OpenRouter\n"
             "/status — состояние\n/done morning|evening — пометить слот сделанным")
 
 def status_text():
@@ -228,6 +258,7 @@ def status_text():
     d = STATE["done"]
     return ("Статус:\nКанал: " + (STATE["channel"] or "не настроен") +
             "\nНейросеть: " + cur_provider() + " / " + (cur_model() if cur_provider() == "gigachat" else cur_ormodel()) +
+            "\nКартинки: " + cur_imgsource() +
             "\nУтро (09:00): " + ("готово" if d.get("morning") == today else "ожидает") +
             "\nВечер (16:00): " + ("готово" if d.get("evening") == today else "ожидает") +
             "\nЧерновик на проверке: " + ("да («" + STATE["pending"]["topic"] + "»)" if STATE["pending"] else "нет"))
@@ -281,6 +312,11 @@ def handle(msg):
         STATE["pending"] = None; save_state(); notify_owner("⏭️ Пропустил публикацию.")
     elif low.startswith("/test"):
         generate("test")
+    elif low.startswith("/imgsource"):
+        parts = text.split(None, 1)
+        if len(parts) > 1 and parts[1] in ("pexels", "ai"):
+            STATE["imgsource"] = parts[1]; save_state()
+            notify_owner("Источник картинок: " + parts[1] + (" (нужен секрет PEXELS_KEY)" if parts[1] == "pexels" and not PEX_KEY else ""))
     elif low.startswith("/channel"):
         parts = text.split(None, 1)
         if len(parts) > 1:

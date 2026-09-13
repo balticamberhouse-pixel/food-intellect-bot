@@ -91,12 +91,12 @@ def llm_text(user_prompt):
     if cur_provider() == "openrouter":
         r = requests.post("https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": "Bearer " + OR_KEY},
-            json={"model": OR_MODEL, "messages": msgs}, timeout=180)
+            json={"model": OR_MODEL, "messages": msgs}, timeout=90)
     else:
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization": "Bearer " + giga_token()},
             json={"model": cur_model(), "messages": msgs, "temperature": 0.9},
-            verify=False, timeout=180)
+            verify=False, timeout=90)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"].strip()
 

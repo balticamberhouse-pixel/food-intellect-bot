@@ -45,19 +45,20 @@ LABEL = {"morning": "09:00", "evening": "16:00", "test": "тест"}
 def msk():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=3)
 
-def tg(method, **kw):
-    for _ in range(4):
+def tg(method, _http_timeout=25, **kw):
+    for _ in range(2):
         try:
-            r = requests.post(API + method, json=kw, timeout=75)
+            r = requests.post(API + method, json=kw, timeout=_http_timeout)
             if r.ok:
                 return r.json().get("result")
+            log.warning("TG %s -> HTTP %s: %s", method, r.status_code, r.text[:200])
             if r.status_code == 429:
                 time.sleep(int(r.json().get("parameters", {}).get("retry_after", 3))); continue
             if 400 <= r.status_code < 500:
                 return {"error": r.json().get("description", r.text[:150])}
         except Exception as e:
-            log.warning("TG %s: %s", method, e)
-        time.sleep(3)
+            log.warning("TG %s exception: %s", method, e)
+        time.sleep(2)
     return None
 
 def notify_owner(text):

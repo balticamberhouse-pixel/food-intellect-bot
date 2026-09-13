@@ -1,4 +1,4 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» v5: реальные фото Pexels + улучшенный AI-запас
+# bot.py — AI-редактор канала «Пищевой интеллект» v6: надёжный разбор ответа + релевантные фото
 import os, json, time, uuid, datetime, subprocess, logging, random
 from urllib.parse import quote
 import requests, urllib3
@@ -99,7 +99,8 @@ SYSTEM = ("Ты — автор телеграм-канала «Пищевой и
           "хранение, готовка, мифы, планирование рациона, сезонность). Пиши СТРОГО НА РУССКОМ ЯЗЫКЕ, "
           "в живом цепляющем стиле: хук в первой строке, короткие предложения, обращение на «ты», "
           "конкретные цифры и примеры, разоблачение мифов. Без воды, штампов и выдуманных исследований; "
-          "без медицинских назначений — где нужно, «проконсультируйтесь с врачом».")
+          "без медицинских назначений — где нужно, «проконсультируйтесь с врачом». "
+          "Никакого маркдауна: без звёздочек, решёток и жирного шрифта.")
 
 def llm_text(user_prompt):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_prompt}]
@@ -119,7 +120,7 @@ def build_prompt(comment):
     recent = "\n".join("- " + t for t in STATE["topics"][-20:]) or "- (пока пусто)"
     p = ("Придумай НОВУЮ тему поста, которой ещё не было (недавние темы — не повторяй):\n" + recent +
          "\n\nНапиши пост, который цепляет внимание с первой строки. Весь ответ — ТОЛЬКО на русском языке.\n"
-         "Формат ответа строго такой:\n"
+         "Формат ответа строго такой, без вступлений и без маркдауна:\n"
          "1-я строка: ТЕМА: <тема в 3-6 словах по-русски>\n"
          "2-я строка: КАРТИНКА: <2-5 слов НА АНГЛИЙСКОМ: какой продукт или блюдо показать на фото>\n"
          "Затем пост: первая строка — хук (неожиданный факт, разоблачение мифа или провокационный вопрос); "
@@ -134,14 +135,24 @@ TRANSLATE_PROMPT = ("Переведи на русский язык пост дл
                     "Хэштеги тоже по-русски. Первая строка ответа: «ТЕМА: <тема по-русски в 3-6 словах>», "
                     "затем пост. Верни только текст без пояснений:\n\n")
 
+def clean_line(s):
+    return s.strip().lstrip("*#> ").strip()
+
 def split_topic(raw):
-    lines = raw.strip().splitlines()
-    topic, img_desc, start = "", "", 0
-    if lines and lines[0].upper().startswith("ТЕМА:"):
-        topic = lines[0].split(":", 1)[1].strip(); start = 1
-    if len(lines) > start and lines[start].upper().startswith(("КАРТИНКА:", "IMAGE:", "PICTURE:")):
-        img_desc = lines[start].split(":", 1)[1].strip(); start += 1
-    rest = "\n".join(lines[start:]).strip()
+    topic, img_desc, body = "", "", []
+    for i, raw_line in enumerate(raw.strip().splitlines()):
+        line = clean_line(raw_line)
+        if not line:
+            continue
+        up = line.upper()
+        if not topic and i < 6 and up.startswith("ТЕМА:"):
+            topic = line.split(":", 1)[1].strip()
+            continue
+        if not img_desc and i < 6 and up.startswith(("КАРТИНКА:", "IMAGE:", "PICTURE:")):
+            img_desc = line.split(":", 1)[1].strip()
+            continue
+        body.append(line)
+    rest = "\n".join(body).strip()
     if len(rest) > 990:
         rest = rest[:990].rsplit("\n", 1)[0] + "\n…"
     return topic or "(тема)", img_desc, rest
@@ -170,11 +181,11 @@ def pick_image(desc):
         try:
             url = pexels_image_url(desc)
             if url:
-                log.info("image: pexels")
+                log.info("image: pexels query=%s", desc)
                 return url
         except Exception as e:
             log.warning("pexels failed: %s", e)
-    log.info("image: ai")
+    log.info("image: ai query=%s", desc)
     return make_image_url(desc)
 
 def generate(slot, comment=""):
@@ -197,7 +208,7 @@ def generate(slot, comment=""):
         except Exception:
             log.exception("translate failed")
     if not img_desc:
-        img_desc = topic
+        img_desc = "delicious healthy fresh food close-up"
     img = pick_image(img_desc)
     STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": img,
                         "created": int(time.time()), "reminded": int(time.time())}
@@ -304,140 +315,4 @@ def handle(msg):
         parts = text.split(None, 1)
         comment = parts[1] if len(parts) > 1 else ""
         slot = STATE["pending"]["slot"] if STATE["pending"] else "test"
-        notify_owner("🔄 Переписываю…"); generate(slot, comment)
-    elif low.startswith("/skip"):
-        p = STATE["pending"]
-        if p and p["slot"] in SLOTS:
-            STATE["done"][p["slot"]] = msk().date().isoformat()
-        STATE["pending"] = None; save_state(); notify_owner("⏭️ Пропустил публикацию.")
-    elif low.startswith("/test"):
-        generate("test")
-    elif low.startswith("/imgsource"):
-        parts = text.split(None, 1)
-        if len(parts) > 1 and parts[1] in ("pexels", "ai"):
-            STATE["imgsource"] = parts[1]; save_state()
-            notify_owner("Источник картинок: " + parts[1] + (" (нужен секрет PEXELS_KEY)" if parts[1] == "pexels" and not PEX_KEY else ""))
-    elif low.startswith("/channel"):
-        parts = text.split(None, 1)
-        if len(parts) > 1:
-            ch = parts[1].strip()
-            if not ch.startswith("@") and not ch.startswith("-100"):
-                ch = "@" + ch
-            STATE["channel"] = ch; save_state()
-            info = tg("getChat", chat_id=ch)
-            if ok_res(info):
-                notify_owner("✅ Канал подключён: " + str(info.get("title", ch)))
-            else:
-                notify_owner("Сохранил канал " + ch + ", но не смог открыть. Проверьте имя и что бот добавлен админом.")
-        else:
-            notify_owner("Формат: /channel @имя_канала")
-    elif low.startswith("/model"):
-        parts = text.split(None, 1)
-        if len(parts) > 1:
-            STATE["giga_model"] = parts[1].strip(); save_state(); notify_owner("Модель: " + STATE["giga_model"])
-    elif low.startswith("/ormodel"):
-        parts = text.split(None, 1)
-        if len(parts) > 1:
-            STATE["or_model"] = parts[1].strip(); save_state(); notify_owner("Модель OpenRouter: " + STATE["or_model"])
-    elif low.startswith("/provider"):
-        parts = text.split(None, 1)
-        if len(parts) > 1 and parts[1] in ("gigachat", "openrouter"):
-            STATE["provider"] = parts[1]; save_state(); notify_owner("Провайдер: " + parts[1])
-    elif low.startswith("/status"):
-        notify_owner(status_text())
-    elif low.startswith("/done"):
-        parts = text.split()
-        if len(parts) > 1 and parts[1] in SLOTS:
-            STATE["done"][parts[1]] = msk().date().isoformat(); save_state()
-            notify_owner("Пометил слот «" + LABEL[parts[1]] + "» сделанным на сегодня.")
-    elif low.startswith("/start") or low.startswith("/help") or low == "меню":
-        notify_owner(menu())
-    else:
-        notify_owner("Я понимаю только команды. /help — список команд.")
-
-# ---------- расписание ----------
-def setup_problem():
-    if cur_provider() == "gigachat" and not GIGA_KEY:
-        return "в репозитории не задан секрет GIGACHAT_KEY"
-    if cur_provider() == "openrouter" and not OR_KEY:
-        return "в репозитории не задан секрет OPENROUTER_KEY"
-    if not STATE["channel"]:
-        return "не задан канал (пришлите /channel @…)"
-    return None
-
-def schedule_check():
-    now = msk(); today = now.date().isoformat()
-    for slot in ("morning", "evening"):
-        h, m = SLOTS[slot]
-        if STATE["done"].get(slot) == today or (now.hour, now.minute) < (h, m):
-            continue
-        p = STATE["pending"]
-        if p:
-            if p["slot"] == slot:
-                if now.timestamp() - p["reminded"] >= 7200:
-                    p["reminded"] = int(now.timestamp()); save_state()
-                    notify_owner("⏰ Напоминаю: черновик к " + LABEL[slot] + " ждёт решения: /publish, /redo, /skip")
-                continue
-            if p["slot"] in SLOTS:
-                STATE["done"][p["slot"]] = today
-            notify_owner("⏭️ Черновик «" + p["topic"] + "» не был одобрен — пропускаю.")
-            STATE["pending"] = None; save_state()
-        prob = setup_problem()
-        if prob:
-            if STATE.get("setup_warned") != today:
-                STATE["setup_warned"] = today; save_state()
-                notify_owner("⚠️ Не могу поставить пост по расписанию: " + prob)
-            continue
-        log.info("generate %s", slot)
-        generate(slot)
-
-# ---------- сохранение в git ----------
-def commit_state():
-    if not CHANGED:
-        return
-    try:
-        ref = os.environ.get("GITHUB_REF", "refs/heads/main")
-        branch = ref.split("refs/heads/")[-1] if ref.startswith("refs/heads/") else "main"
-        subprocess.run(["git", "config", "user.name", "food-intel-bot"], check=False)
-        subprocess.run(["git", "config", "user.email", "food-intel-bot@users.noreply.github.com"], check=False)
-        subprocess.run(["git", "add", "state.json"], check=False)
-        if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode != 0:
-            subprocess.run(["git", "commit", "-m", "state: auto update"], check=False)
-            subprocess.run(["git", "push", "origin", "HEAD:" + branch], check=False)
-            log.info("state pushed")
-    except Exception as e:
-        log.warning("commit failed: %s", e)
-
-def main():
-    if not BOT_TOKEN:
-        log.error("НЕТ BOT_TOKEN! Добавьте секрет BOT_TOKEN в настройках репозитория.")
-        return
-    tg("deleteWebhook")
-    me = tg("getMe")
-    log.info("I am: %s", me)
-    log.info("run started")
-    end = time.time() + RUN_SECONDS
-    while time.time() < end:
-        ups = tg("getUpdates", _http_timeout=55, offset=STATE["offset"], timeout=50, allowed_updates=["message"]) or []
-        if isinstance(ups, dict):
-            ups = []; time.sleep(3)
-        for u in ups:
-            STATE["offset"] = u["update_id"] + 1; save_state()
-            m = u.get("message") or {}
-            log.info("update %s | chat %s (%s) | %s", u["update_id"],
-                     m.get("chat", {}).get("id"), m.get("chat", {}).get("type"),
-                     (m.get("text") or m.get("caption") or "<фото>")[:80])
-            try:
-                if m:
-                    handle(m)
-            except Exception:
-                log.exception("handle")
-        try:
-            schedule_check()
-        except Exception:
-            log.exception("sched")
-    commit_state()
-    log.info("run finished")
-
-if __name__ == "__main__":
-    main()
+        notify_owner("🔄 Переписываю…"); generate(slot

@@ -1,4 +1,4 @@
-# bot.py — AI-редактор канала «Пищевой интеллект» v7: рубрики, наука, КБЖУ, точные картинки
+# bot.py — AI-редактор канала «Пищевой интеллект» v8: меню на день + структура с выделениями
 import os, json, time, uuid, datetime, subprocess, logging, random
 from urllib.parse import quote
 import requests, urllib3
@@ -56,7 +56,10 @@ RUBRICS = [
     ("Планирование рациона", "составление меню и заготовок на неделю: список покупок, бюджет, batch-cooking, заморозка, готовые схемы приёмов пищи."),
     ("ЗОЖ шире еды", "сон, физическая активность, вода, стресс и привычки: как они влияют на вес и здоровье, с ссылками на исследования и конкретными нормами."),
     ("Сезонность и составы", "сезонные продукты и сравнение похожих продуктов между собой: что выбрать и почему, с цифрами по составу и цене."),
+    ("Меню на день", "готовое меню на один день: завтрак, обед, ужин и 1-2 перекуса из сезонных, доступных и недорогих продуктов; каждый приём пищи с новой строки "
+                     "через «• » с составом блюда; в конце строка с примерным итогом КБЖУ за день и список покупок из 5-7 позиций; учитывай сезон и средние цены."),
 ]
+MENU_RUBRIC = RUBRICS[-1]
 
 def msk():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=3)
@@ -85,6 +88,19 @@ def notify_owner(text):
         res = tg("sendMessage", chat_id=STATE["owner"], text=text)
         log.info("notify_owner -> %s", "ok" if ok_res(res) else res)
 
+def send_post(chat_id, text, photo=None):
+    if photo:
+        res = tg("sendPhoto", chat_id=chat_id, photo=photo, caption=text, parse_mode="HTML")
+        if ok_res(res):
+            return res
+        res = tg("sendPhoto", chat_id=chat_id, photo=photo, caption=text)
+        if ok_res(res):
+            return res
+    res = tg("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML")
+    if ok_res(res):
+        return res
+    return tg("sendMessage", chat_id=chat_id, text=text)
+
 def cyr_ratio(s):
     letters = [c for c in s if c.isalpha()]
     if not letters:
@@ -111,9 +127,12 @@ SYSTEM = ("Ты — профессиональный редактор телег
           "здорового образа жизни: питание и выбор продуктов, чтение этикеток, КБЖУ и расчёт рациона, готовка и хранение, "
           "физическая активность, сон, вода, стресс и привычки. Пиши СТРОГО НА РУССКОМ ЯЗЫКЕ, содержательно и по-деловому, "
           "но живо: хук в первой строке, короткие предложения, обращение на «ты», конкретные цифры и примеры. "
+          "Структурируй пост: подзаголовки блоков и ключевые мысли выделяй жирным через HTML-тег <b>...</b>, списки веди "
+          "с новой строки через «• ». Используй ТОЛЬКО тег <b>, никаких других тегов, никаких звёздочек маркдауна; "
+          "символы < и & вне тега <b> не используй. "
           "Упоминай только РЕАЛЬНЫЕ широко известные исследования (автор или коллектив, год, вывод одной фразой) и только "
           "если уверен в них; перефразируй выводы, НЕ выдумывай цитаты, DOI и точные цифры, в которых не уверен; "
-          "где уместно — «проконсультируйтесь с врачом». Без воды, штампов и маркдауна (без звёздочек и решёток).")
+          "где уместно — «проконсультируйтесь с врачом». Без воды и штампов.")
 
 def llm_text(user_prompt):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user_prompt}]
@@ -136,12 +155,13 @@ def build_prompt(rubric_name, rubric_hint, comment):
          "\n\nСтруктура поста обязательная:\n"
          "1) Первая строка — хук: неожиданный факт, цифра или разоблачение.\n"
          "2) 2-3 абзаца сути с конкретикой и цифрами.\n"
-         "3) Блок «🔬 Что говорит наука:» — 1-2 предложения с упоминанием реального известного исследования "
+         "3) Блок <b>🔬 Что говорит наука:</b> — 1-2 предложения с упоминанием реального известного исследования "
          "(автор/коллектив, год) и его вывода простыми словами.\n"
-         "4) Блок «✅ Что делать:» — 2-3 конкретных шага или расчёт с цифрами (в рубрике КБЖУ — полный пример расчёта "
+         "4) Блок <b>✅ Что делать:</b> — 2-3 конкретных шага или расчёт с цифрами (в рубрике КБЖУ — полный пример расчёта "
          "по формуле Миффлина-Сан Жеора с коэффициентом активности).\n"
          "5) Финал — резкий вывод и вопрос читателям.\n"
-         "6) 3-4 хэштега по-русски с новой строки.\n\n"
+         "6) 3-4 хэштега по-русски с новой строки.\n"
+         "Ключевые мысли и подзаголовки выделяй тегом <b>, списки — через «• » с новой строки.\n\n"
          "Формат ответа строго такой, без вступлений и без маркдауна:\n"
          "1-я строка: ТЕМА: <тема в 3-6 словах по-русски>\n"
          "2-я строка: КАРТИНКА: <3-6 слов НА АНГЛИЙСКОМ: конкретные предметы в кадре, точно соответствующие теме поста, "
@@ -151,7 +171,7 @@ def build_prompt(rubric_name, rubric_hint, comment):
         p += "\n\nКомментарий редактора (владельца канала), который надо учесть: " + comment
     return p
 
-TRANSLATE_PROMPT = ("Переведи на русский язык пост для телеграм-канала, сохранив структуру, хук, цифры и смысл. "
+TRANSLATE_PROMPT = ("Переведи на русский язык пост для телеграм-канала, сохранив структуру, хук, цифры, выделения <b> и смысл. "
                     "Хэштеги тоже по-русски. Первая строка ответа: «ТЕМА: <тема по-русски в 3-6 словах>», "
                     "затем пост. Верни только текст без пояснений:\n\n")
 
@@ -208,10 +228,13 @@ def pick_image(desc):
     log.info("image: ai query=%s", desc)
     return make_image_url(desc)
 
-def generate(slot, comment=""):
+def generate(slot, comment="", force_rubric=None):
     idx = int(STATE.get("gen_count", 0))
     STATE["gen_count"] = idx + 1
-    rubric_name, rubric_hint = RUBRICS[idx % len(RUBRICS)]
+    if force_rubric:
+        rubric_name, rubric_hint = force_rubric
+    else:
+        rubric_name, rubric_hint = RUBRICS[idx % len(RUBRICS)]
     log.info("rubric: %s", rubric_name)
     try:
         raw = llm_text(build_prompt(rubric_name, rubric_hint, comment))
@@ -237,7 +260,7 @@ def generate(slot, comment=""):
     STATE["pending"] = {"slot": slot, "topic": topic, "text": text, "image": img,
                         "created": int(time.time()), "reminded": int(time.time())}
     save_state()
-    pic = tg("sendPhoto", chat_id=STATE["owner"], photo=img, caption=text)
+    pic = send_post(STATE["owner"], text, photo=img)
     if not ok_res(pic):
         notify_owner("📝 Черновик к " + LABEL.get(slot, slot) + " (без картинки):\n\n" + text)
     notify_owner("──────────────\nРубрика: " + rubric_name +
@@ -259,13 +282,7 @@ def publish():
         notify_owner("Сейчас нет черновика. /test — сделать тестовый."); return
     if not STATE["channel"]:
         notify_owner("Канал не настроен. Пришлите /channel @ваш_канал"); return
-    res = None
-    if p.get("image"):
-        res = tg("sendPhoto", chat_id=STATE["channel"], photo=p["image"], caption=p["text"])
-        if not ok_res(res):
-            log.warning("photo publish failed, fallback to text")
-    if not ok_res(res):
-        res = tg("sendMessage", chat_id=STATE["channel"], text=p["text"])
+    res = send_post(STATE["channel"], p["text"], photo=p.get("image"))
     if not ok_res(res):
         err = res.get("error", "нет ответа") if isinstance(res, dict) else "нет ответа"
         notify_owner("⚠️ Не удалось опубликовать: " + err +
@@ -283,6 +300,7 @@ def publish():
 def menu():
     return ("Мои команды:\n/publish — опубликовать черновик\n"
             "/pub + фото с подписью-текстом — опубликовать ВАШ пост сразу\n"
+            "/menu — внеочередной пост «Меню на день»\n"
             "/redo комментарий — переписать черновик\n/skip — пропустить публикацию\n"
             "/test — тестовый черновик прямо сейчас\n/channel @имя — задать канал\n"
             "/imgsource pexels|ai — источник картинок (фото или генерация)\n"
@@ -323,7 +341,7 @@ def handle(msg):
             body = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
             if not STATE["channel"]:
                 notify_owner("Канал не настроен: /channel @имя_канала"); return
-            res = tg("sendPhoto", chat_id=STATE["channel"], photo=msg["photo"][-1]["file_id"], caption=body)
+            res = send_post(STATE["channel"], body, photo=msg["photo"][-1]["file_id"])
             if ok_res(res):
                 link = post_link(res.get("message_id"))
                 notify_owner("✅ Опубликовано!" + ("\n" + link if link else ""))
@@ -343,6 +361,8 @@ def handle(msg):
         comment = parts[1] if len(parts) > 1 else ""
         slot = STATE["pending"]["slot"] if STATE["pending"] else "test"
         notify_owner("🔄 Переписываю…"); generate(slot, comment)
+    elif low.startswith("/menu"):
+        notify_owner("🍽 Собираю меню на день…"); generate("test", force_rubric=MENU_RUBRIC)
     elif low.startswith("/skip"):
         p = STATE["pending"]
         if p and p["slot"] in SLOTS:
